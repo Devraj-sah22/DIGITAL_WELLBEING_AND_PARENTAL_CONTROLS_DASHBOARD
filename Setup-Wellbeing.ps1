@@ -1,125 +1,110 @@
-# Setup script for Digital Wellbeing Dashboard
-Write-Host "Setting up Digital Wellbeing Dashboard..." -ForegroundColor Green
+# Digital Wellbeing Dashboard Setup
+# Save as: Setup-Wellbeing.ps1
 
-# Check if running as administrator
-function Test-Administrator {
-    $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($currentUser)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  Digital Wellbeing Dashboard Setup     " -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
 
-if (-not (Test-Administrator)) {
+# Check for main script
+$mainScript = "DigitalWellbeing.ps1"
+if (-not (Test-Path $mainScript)) {
+    Write-Host "ERROR: $mainScript not found!" -ForegroundColor Red
+    Write-Host "Make sure both scripts are in the same folder." -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "WARNING: Some features require administrator privileges." -ForegroundColor Yellow
-    Write-Host "For full functionality, run this script as Administrator." -ForegroundColor Yellow
-    Write-Host "Right-click on PowerShell and select 'Run as Administrator'" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Continuing with limited setup..." -ForegroundColor Yellow
-}
-
-# Create desktop shortcut
-$desktopPath = [System.Environment]::GetFolderPath("Desktop")
-$shortcutPath = "$desktopPath\Digital Wellbeing.lnk"
-$targetPath = "$PSScriptRoot\DigitalWellbeing.ps1"
-
-# Check if main script exists
-if (-not (Test-Path $targetPath)) {
-    Write-Host "Error: DigitalWellbeing.ps1 not found in current directory!" -ForegroundColor Red
-    Write-Host "Make sure both scripts are in the same folder." -ForegroundColor Red
+    pause
     exit 1
 }
 
-# Create shortcut
+Write-Host "Creating shortcuts..." -ForegroundColor Yellow
+
+# Desktop shortcut
 try {
+    $desktopPath = [Environment]::GetFolderPath("Desktop")
+    $shortcutPath = "$desktopPath\Digital Wellbeing.lnk"
+    
     $WshShell = New-Object -ComObject WScript.Shell
     $shortcut = $WshShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = "powershell.exe"
-    $shortcut.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$targetPath`""
-    $shortcut.WorkingDirectory = $PSScriptRoot
+    $shortcut.Arguments = "-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File `"$PWD\$mainScript`""
+    $shortcut.WorkingDirectory = $PWD
     $shortcut.IconLocation = "shell32.dll,13"
     $shortcut.Description = "Digital Wellbeing Dashboard"
     $shortcut.Save()
-    Write-Host "Desktop shortcut created." -ForegroundColor Green
+    
+    Write-Host "  Desktop shortcut created" -ForegroundColor Green
 }
 catch {
-    Write-Host "Could not create desktop shortcut." -ForegroundColor Yellow
+    Write-Host "  Could not create desktop shortcut" -ForegroundColor Yellow
 }
 
-# Create Start Menu shortcut
+# Start Menu shortcut
 try {
-    $startMenuPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Digital Wellbeing.lnk"
-    $startShortcut = $WshShell.CreateShortcut($startMenuPath)
+    $startMenuPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs"
+    if (-not (Test-Path $startMenuPath)) {
+        New-Item -ItemType Directory -Path $startMenuPath -Force | Out-Null
+    }
+    
+    $startShortcutPath = "$startMenuPath\Digital Wellbeing.lnk"
+    $WshShell = New-Object -ComObject WScript.Shell
+    $startShortcut = $WshShell.CreateShortcut($startShortcutPath)
     $startShortcut.TargetPath = "powershell.exe"
-    $startShortcut.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$targetPath`""
-    $startShortcut.WorkingDirectory = $PSScriptRoot
+    $startShortcut.Arguments = "-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File `"$PWD\$mainScript`""
+    $startShortcut.WorkingDirectory = $PWD
     $startShortcut.IconLocation = "shell32.dll,13"
+    $startShortcut.Description = "Digital Wellbeing Dashboard"
     $startShortcut.Save()
-    Write-Host "Start Menu shortcut created." -ForegroundColor Green
+    
+    Write-Host "  Start Menu shortcut created" -ForegroundColor Green
 }
 catch {
-    Write-Host "Could not create Start Menu shortcut." -ForegroundColor Yellow
-}
-
-# Only try to create scheduled task if running as admin
-if (Test-Administrator) {
-    try {
-        Write-Host "Creating system integration..." -ForegroundColor Yellow
-        
-        # Create scheduled task for auto-start
-        $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$targetPath`""
-        $taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-        $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-        $taskPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
-        
-        Register-ScheduledTask -TaskName "DigitalWellbeing" -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Principal $taskPrincipal -Description "Digital Wellbeing Dashboard - Tracks screen time and application usage" -Force
-        
-        Write-Host "Scheduled task created for auto-start." -ForegroundColor Green
-    }
-    catch {
-        Write-Host "Could not create scheduled task." -ForegroundColor Yellow
-    }
-}
-else {
-    Write-Host "Skipping scheduled task creation (requires admin rights)." -ForegroundColor Yellow
+    Write-Host "  Could not create Start Menu shortcut" -ForegroundColor Yellow
 }
 
 # Create data directory
 $appDataPath = "$env:APPDATA\DigitalWellbeing"
 if (-not (Test-Path $appDataPath)) {
     New-Item -ItemType Directory -Path $appDataPath -Force | Out-Null
-    Write-Host "Data directory created: $appDataPath" -ForegroundColor Green
+    Write-Host "  Data directory created" -ForegroundColor Green
 }
 
-# Set execution policy for current user
+# Set execution policy
 try {
     Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force -ErrorAction SilentlyContinue
-    Write-Host "Execution policy configured." -ForegroundColor Green
+    Write-Host "  Execution policy configured" -ForegroundColor Green
 }
 catch {
-    Write-Host "Note: Could not set execution policy." -ForegroundColor Yellow
+    Write-Host "  Note: Execution policy change may require admin rights" -ForegroundColor Yellow
 }
 
 Write-Host ""
-Write-Host "=== Installation Complete! ===" -ForegroundColor Green
-Write-Host "Desktop shortcut created" -ForegroundColor Cyan
-Write-Host "Start Menu shortcut created" -ForegroundColor Cyan
-Write-Host "Data directory created" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "          SETUP COMPLETE!               " -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Dashboard will start automatically when you log in" -ForegroundColor White
+Write-Host "How to use:" -ForegroundColor White
+Write-Host "  Double-click 'Digital Wellbeing' on Desktop" -ForegroundColor Gray
+Write-Host "  Or run: .\DigitalWellbeing.ps1" -ForegroundColor Gray
 Write-Host ""
-Write-Host "To start the dashboard manually:" -ForegroundColor White
-Write-Host "  - Double-click 'Digital Wellbeing' shortcut on Desktop" -ForegroundColor Gray
-Write-Host "  - OR Run: .\DigitalWellbeing.ps1" -ForegroundColor Gray
-Write-Host "  - OR Find it in Start Menu > Digital Wellbeing" -ForegroundColor Gray
+Write-Host "Features:" -ForegroundColor White
+Write-Host "  Screen time tracking" -ForegroundColor Gray
+Write-Host "  Activity monitoring" -ForegroundColor Gray
+Write-Host "  Parental controls" -ForegroundColor Gray
+Write-Host "  Real-time data" -ForegroundColor Gray
+Write-Host "  Premium UI" -ForegroundColor Gray
+Write-Host ""
 
-# Ask to start now
-Write-Host ""
-$response = Read-Host "Start dashboard now? (Y/N)"
-if ($response -eq 'Y' -or $response -eq 'y') {
-    Write-Host "Starting Digital Wellbeing Dashboard..." -ForegroundColor Green
-    Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$targetPath`""
+$choice = Read-Host "Start Digital Wellbeing Dashboard now? (Y/N)"
+if ($choice -eq 'Y' -or $choice -eq 'y') {
+    Write-Host ""
+    Write-Host "Starting dashboard..." -ForegroundColor Green
+    Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File `"$PWD\$mainScript`""
 }
 else {
     Write-Host ""
-    Write-Host "Setup complete! You can start the dashboard anytime using the shortcuts." -ForegroundColor Green
+    Write-Host "You can start the dashboard anytime using the shortcuts." -ForegroundColor Green
 }
+
+Write-Host ""
+Write-Host "Press any key to exit..."
+pause
