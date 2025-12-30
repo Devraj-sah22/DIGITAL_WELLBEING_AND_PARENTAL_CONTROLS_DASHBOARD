@@ -22,6 +22,11 @@ try {
     $desktopPath = [Environment]::GetFolderPath("Desktop")
     $shortcutPath = "$desktopPath\Digital Wellbeing.lnk"
     
+    if (Test-Path $shortcutPath) {
+        Remove-Item $shortcutPath -Force -ErrorAction SilentlyContinue
+        Write-Host "  Removed old shortcut" -ForegroundColor Yellow
+    }
+    
     $WshShell = New-Object -ComObject WScript.Shell
     $shortcut = $WshShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = "powershell.exe"
@@ -30,10 +35,11 @@ try {
     $shortcut.Description = "Digital Wellbeing Dashboard"
     $shortcut.Save()
     
-    Write-Host "Desktop shortcut created" -ForegroundColor Green
+    Write-Host "  Desktop shortcut created" -ForegroundColor Green
 }
 catch {
-    Write-Host "Could not create desktop shortcut" -ForegroundColor Yellow
+    Write-Host "  Could not create desktop shortcut" -ForegroundColor Yellow
+    Write-Host "  (You may need to run as Administrator)" -ForegroundColor Gray
 }
 
 Write-Host "Creating data directory..." -ForegroundColor Yellow
@@ -42,9 +48,13 @@ Write-Host "Creating data directory..." -ForegroundColor Yellow
 $appDataPath = "$env:APPDATA\DigitalWellbeing"
 if (-not (Test-Path $appDataPath)) {
     New-Item -ItemType Directory -Path $appDataPath -Force | Out-Null
-    Write-Host "Data directory created" -ForegroundColor Green
+    Write-Host "  Data directory created" -ForegroundColor Green
+}
+else {
+    Write-Host "  Data directory already exists" -ForegroundColor Green
 }
 
+Write-Host ""
 Write-Host "Setup complete!" -ForegroundColor Green
 Write-Host ""
 Write-Host "To start the dashboard:" -ForegroundColor White
@@ -57,6 +67,8 @@ Write-Host "- Activity monitoring" -ForegroundColor Gray
 Write-Host "- Parental controls" -ForegroundColor Gray
 Write-Host "- Charts and graphs" -ForegroundColor Gray
 Write-Host "- Real-time updates" -ForegroundColor Gray
+Write-Host "- Focus timer" -ForegroundColor Gray
+Write-Host "- Premium features" -ForegroundColor Gray
 Write-Host ""
 
 $choice = Read-Host "Start Digital Wellbeing Dashboard now? (Y/N)"

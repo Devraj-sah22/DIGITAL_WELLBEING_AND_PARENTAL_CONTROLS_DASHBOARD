@@ -1,12 +1,119 @@
-﻿# Digital Wellbeing & Parental Controls Dashboard
-# COMPLETELY FIXED - WITH WORKING SIMPLE GRAPHS
+﻿# Digital Wellbeing & Parental Controls Dashboard - REAL TRACKING VERSION
+# ACTUALLY MEASURES USER SCREEN TIME AND ACTIVITY
 # Save as: DigitalWellbeing.ps1
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms.DataVisualization
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-# ========== SIMPLE GRAPH DRAWING FUNCTIONS ==========
+# ========== REAL SCREEN TIME TRACKING ==========
+$global:lastActiveTime = [DateTime]::Now
+$global:totalActiveTime = 0
+$global:currentApp = ""
+$global:appUsage = @{}
+$global:keyPressCount = 0
+$global:mouseMoveCount = 0
+
+function Get-CurrentApplication {
+    try {
+        $process = Get-Process | Where-Object { $_.MainWindowTitle -ne "" -and $_.MainWindowHandle -ne 0 } | 
+                   Sort-Object WorkingSet -Descending | Select-Object -First 1
+        if ($process) {
+            return $process.ProcessName
+        }
+        return "Idle"
+    }
+    catch {
+        return "Unknown"
+    }
+}
+
+function Get-UserActivityLevel {
+    # Track keyboard and mouse activity
+    Add-Type @"
+    using System;
+    using System.Runtime.InteropServices;
+    
+    public class UserActivity {
+        [DllImport("user32.dll")]
+        public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+        
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LASTINPUTINFO {
+            public uint cbSize;
+            public uint dwTime;
+        }
+        
+        public static uint GetLastInputTime() {
+            LASTINPUTINFO lastInput = new LASTINPUTINFO();
+            lastInput.cbSize = (uint)Marshal.SizeOf(lastInput);
+            GetLastInputInfo(ref lastInput);
+            return lastInput.dwTime;
+        }
+        
+        public static int GetIdleTime() {
+            uint lastInputTime = GetLastInputTime();
+            uint currentTime = (uint)Environment.TickCount;
+            return (int)(currentTime - lastInputTime) / 1000; // Convert to seconds
+        }
+    }
+"@
+    
+    $idleSeconds = [UserActivity]::GetIdleTime()
+    if ($idleSeconds -lt 60) {
+        return "Active"
+    } elseif ($idleSeconds -lt 300) {
+        return "Away"
+    } else {
+        return "Idle"
+    }
+}
+
+function Update-ScreenTimeTracking {
+    $currentTime = [DateTime]::Now
+    $timeDiff = ($currentTime - $global:lastActiveTime).TotalSeconds
+    
+    # Check if user is active
+    $activityLevel = Get-UserActivityLevel
+    
+    if ($activityLevel -eq "Active") {
+        $global:totalActiveTime += $timeDiff
+        
+        # Get current application
+        $currentApp = Get-CurrentApplication
+        
+        if ($currentApp -ne $global:currentApp) {
+            $global:currentApp = $currentApp
+            
+            # Record app switch in activity log
+            $activityEntry = @{
+                Timestamp = (Get-Date).ToString("HH:mm:ss")
+                Application = $currentApp
+                Type = "AppSwitch"
+                Duration = 0
+            }
+            
+            if ($global:appData.ActivityLog.Count -gt 100) {
+                $global:appData.ActivityLog = $global:appData.ActivityLog | Select-Object -Last 50
+            }
+            
+            $global:appData.ActivityLog += $activityEntry
+        }
+        
+        # Update app usage
+        if ($currentApp -ne "Idle" -and $currentApp -ne "Unknown") {
+            if (-not $global:appUsage.ContainsKey($currentApp)) {
+                $global:appUsage[$currentApp] = 0
+            }
+            $global:appUsage[$currentApp] += $timeDiff
+        }
+    }
+    
+    $global:lastActiveTime = $currentTime
+}
+
+# ========== GRAPH DRAWING FUNCTIONS ==========
 function Draw-SimpleBarChart {
     param(
         [System.Drawing.Graphics]$graphics,
@@ -49,14 +156,7 @@ function Draw-SimpleBarChart {
         $barHeight = $data[$i] * $scale
         $y = $height - 40 - $barHeight
         
-        # Draw simple bar
         $graphics.FillRectangle($brush, $x, $y, $barWidth - 10, $barHeight)
-        
-        # Draw outline
-        $graphics.DrawRectangle(
-            (New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(150, 0, 0, 0), 1)),
-            $x, $y, $barWidth - 10, $barHeight
-        )
         
         # Draw value on top
         $graphics.DrawString("$($data[$i])h", 
@@ -69,81 +169,6 @@ function Draw-SimpleBarChart {
             (New-Object System.Drawing.Font("Segoe UI", 9)), 
             $textBrush, 
             $x, $height - 30)
-    }
-}
-
-function Draw-SimpleLineChart {
-    param(
-        [System.Drawing.Graphics]$graphics,
-        [array]$data,
-        [array]$labels,
-        [int]$width,
-        [int]$height,
-        [System.Drawing.Color]$color
-    )
-    
-    $graphics.Clear([System.Drawing.Color]::White)
-    
-    if ($data.Count -eq 0) { return }
-    
-    $maxValue = ($data | Measure-Object -Maximum).Maximum
-    if ($maxValue -eq 0) { $maxValue = 1 }
-    
-    $pointWidth = ($width - 100) / ($data.Count - 1)
-    $scale = ($height - 80) / $maxValue
-    
-    # Draw grid
-    $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(230, 230, 230), 1)
-    for ($i = 0; $i -le 5; $i++) {
-        $y = $height - 40 - ($i * (($height - 80) / 5))
-        $graphics.DrawLine($pen, 50, $y, $width - 50, $y)
-        
-        $value = [math]::Round(($i * $maxValue / 5), 1)
-        $graphics.DrawString("${value}h", 
-            (New-Object System.Drawing.Font("Segoe UI", 8)), 
-            (New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Gray)), 
-            20, $y - 10)
-    }
-    
-    # Draw line
-    $linePen = New-Object System.Drawing.Pen($color, 3)
-    
-    for ($i = 0; $i -lt $data.Count - 1; $i++) {
-        $x1 = 50 + ($i * $pointWidth)
-        $y1 = $height - 40 - ($data[$i] * $scale)
-        $x2 = 50 + (($i + 1) * $pointWidth)
-        $y2 = $height - 40 - ($data[$i + 1] * $scale)
-        
-        $graphics.DrawLine($linePen, $x1, $y1, $x2, $y2)
-    }
-    
-    # Draw data points and labels
-    $pointBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-    
-    for ($i = 0; $i -lt $data.Count; $i++) {
-        $x = 50 + ($i * $pointWidth)
-        $y = $height - 40 - ($data[$i] * $scale)
-        
-        # Draw data point
-        $graphics.FillEllipse($pointBrush, $x - 4, $y - 4, 8, 8)
-        $graphics.DrawEllipse(
-            (New-Object System.Drawing.Pen($color, 2)),
-            $x - 4, $y - 4, 8, 8
-        )
-        
-        # Draw label (only every 3rd label)
-        if ($i % 3 -eq 0) {
-            $graphics.DrawString($labels[$i], 
-                (New-Object System.Drawing.Font("Segoe UI", 8)), 
-                (New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Gray)), 
-                $x - 10, $height - 30)
-        }
-        
-        # Draw value
-        $graphics.DrawString("$($data[$i])h", 
-            (New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)), 
-            (New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(100, 0, 0, 0))), 
-            $x - 10, $y - 20)
     }
 }
 
@@ -160,7 +185,13 @@ if (-not (Test-Path $appDataPath)) {
 function Initialize-Data {
     if (Test-Path $dataFile) {
         try {
-            return Get-Content $dataFile | ConvertFrom-Json
+            $data = Get-Content $dataFile | ConvertFrom-Json
+            
+            # Initialize missing properties for backward compatibility
+            if (-not $data.AppUsage) { $data | Add-Member -NotePropertyName "AppUsage" -NotePropertyValue @{} }
+            if (-not $data.DailyDetailed) { $data | Add-Member -NotePropertyName "DailyDetailed" -NotePropertyValue @{} }
+            
+            return $data
         }
         catch {
             Write-Host "Data file corrupted, creating new..." -ForegroundColor Yellow
@@ -170,18 +201,27 @@ function Initialize-Data {
     $defaultData = @{
         Applications = @{}
         DailyStats = @{}
+        DailyDetailed = @{}
         Notifications = @()
         ScreenTime = @{}
         TimeBlocks = @()
         Alerts = @()
         ActivityLog = @()
+        AppUsage = @{}
+        Goals = @{
+            DailyLimit = 6
+            ProductiveHours = 3
+            BreakReminders = $true
+            FocusSessions = 4
+        }
         ParentalControls = @{
             TimeLimit = 6
             Bedtime = "22:00"
-            BlockedApps = @("Steam", "TikTok", "Instagram", "Discord")
+            BlockedApps = @("Steam", "TikTok", "Instagram", "Discord", "YouTube")
             WebsiteFilter = $true
             FocusMode = $false
             IsActive = $true
+            DailyReport = $true
         }
         Premium = $false
         Settings = @{
@@ -191,6 +231,8 @@ function Initialize-Data {
             DataRetention = 30
             TrackRealTime = $true
             AlertSound = $true
+            TrackApplications = $true
+            TrackProductivity = $true
         }
     }
     $defaultData | ConvertTo-Json | Set-Content $dataFile
@@ -213,62 +255,209 @@ function Update-Status {
 function Update-DashboardStats {
     $today = (Get-Date).ToString("yyyy-MM-dd")
     
-    # Update stats cards with real data
-    if ($global:appData.DailyStats.$today) {
-        $screenTimeHours = [math]::Floor($global:appData.DailyStats.$today.TotalMinutes / 60)
-        $screenTimeMinutes = $global:appData.DailyStats.$today.TotalMinutes % 60
+    # Calculate real screen time
+    $screenTimeHours = [math]::Floor($global:totalActiveTime / 3600)
+    $screenTimeMinutes = [math]::Floor(($global:totalActiveTime % 3600) / 60)
+    
+    # Update daily stats
+    if (-not $global:appData.DailyStats.$today) {
+        $global:appData.DailyStats.$today = @{
+            TotalSeconds = 0
+            TotalMinutes = 0
+            StartTime = (Get-Date).ToString("HH:mm:ss")
+        }
+    }
+    
+    $global:appData.DailyStats.$today.TotalSeconds = $global:totalActiveTime
+    $global:appData.DailyStats.$today.TotalMinutes = [math]::Floor($global:totalActiveTime / 60)
+    
+    # Update stats cards
+    if ($statsPanel -and $statsPanel.Controls.Count -gt 0) {
+        if ($statsPanel.Controls[0].Controls[0]) {
+            $statsPanel.Controls[0].Controls[0].Text = "${screenTimeHours}h ${screenTimeMinutes}m"
+        }
         
-        if ($statsPanel -and $statsPanel.Controls.Count -gt 0) {
-            if ($statsPanel.Controls[0].Controls[0]) {
-                $statsPanel.Controls[0].Controls[0].Text = "${screenTimeHours}h ${screenTimeMinutes}m"
+        # Count unique apps used today
+        $appCount = ($global:appUsage.Keys | Where-Object { $_ -ne "Idle" -and $_ -ne "Unknown" }).Count
+        if ($statsPanel.Controls[1].Controls[0]) {
+            $statsPanel.Controls[1].Controls[0].Text = "$appCount"
+        }
+        
+        # Calculate productivity score
+        $productiveApps = @("OUTLOOK", "EXCEL", "WORD", "POWERPNT", "CODE", "DEVENV", "CHROME", "EDGE", "FIREFOX")
+        $productiveTime = 0
+        $totalTime = $global:totalActiveTime
+        
+        foreach ($app in $global:appUsage.Keys) {
+            if ($productiveApps -contains $app.ToUpper()) {
+                $productiveTime += $global:appUsage[$app]
             }
-            
-            # Count unique apps
-            $appCount = ($global:appData.ActivityLog | Where-Object { 
-                $_.Date -eq $today -and $_.Application -ne $null 
-            } | Select-Object -ExpandProperty Application -Unique).Count
-            
-            if ($statsPanel.Controls[1].Controls[0]) {
-                $statsPanel.Controls[1].Controls[0].Text = "$appCount"
-            }
+        }
+        
+        $productivityScore = if ($totalTime -gt 0) { [math]::Round(($productiveTime / $totalTime) * 100) } else { 0 }
+        
+        if ($statsPanel.Controls[2].Controls[0]) {
+            $statsPanel.Controls[2].Controls[0].Text = "$productivityScore%"
+        }
+        
+        # Current activity
+        $currentActivity = if ($global:currentApp -eq "Idle") { "Idle" } else { $global:currentApp }
+        if ($statsPanel.Controls[3].Controls[0]) {
+            $statsPanel.Controls[3].Controls[0].Text = $currentActivity
         }
     }
 }
 
 function Update-Charts {
-    # Update weekly chart
+    # Update weekly chart with real data
     if ($weeklyChartBox -and $weeklyChartBox.Visible) {
         $bitmap = New-Object System.Drawing.Bitmap($weeklyChartBox.Width, $weeklyChartBox.Height)
         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
         
-        $weeklyData = @(3.5, 4.2, 3.8, 5.1, 4.5, 6.2, 4.8)
+        # Get last 7 days data
+        $weeklyData = @()
         $weeklyLabels = @("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+        
+        for ($i = 6; $i -ge 0; $i--) {
+            $date = (Get-Date).AddDays(-$i).ToString("yyyy-MM-dd")
+            if ($global:appData.DailyStats.$date) {
+                $hours = [math]::Round($global:appData.DailyStats.$date.TotalSeconds / 3600, 1)
+                $weeklyData += $hours
+            } else {
+                $weeklyData += 0
+            }
+        }
         
         Draw-SimpleBarChart $graphics $weeklyData $weeklyLabels $weeklyChartBox.Width $weeklyChartBox.Height ([System.Drawing.Color]::FromArgb(79, 70, 229))
         
         $weeklyChartBox.Image = $bitmap
     }
     
-    # Update daily chart
-    if ($dailyChartBox -and $dailyChartBox.Visible) {
-        $bitmap = New-Object System.Drawing.Bitmap($dailyChartBox.Width, $dailyChartBox.Height)
+    # Update app usage chart
+    if ($appChartBox -and $appChartBox.Visible) {
+        $bitmap = New-Object System.Drawing.Bitmap($appChartBox.Width, $appChartBox.Height)
         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
         
-        $hourlyData = @(0.5, 1.2, 2.0, 1.8, 2.5, 3.0, 2.8, 2.5, 2.0, 1.5, 1.0, 0.8, 1.2, 1.5, 2.0, 2.5, 3.0, 2.8, 2.2, 1.8, 1.5, 1.2, 0.8, 0.5)
-        $hourlyLabels = @()
-        for ($i = 0; $i -lt 24; $i++) {
-            $hourlyLabels += "$i"
+        # Get top 5 apps by usage
+        $topApps = $global:appUsage.GetEnumerator() | 
+                   Where-Object { $_.Key -ne "Idle" -and $_.Key -ne "Unknown" } |
+                   Sort-Object Value -Descending | 
+                   Select-Object -First 5
+        
+        if ($topApps.Count -gt 0) {
+            $appData = @()
+            $appLabels = @()
+            
+            foreach ($app in $topApps) {
+                $hours = [math]::Round($app.Value / 3600, 1)
+                $appData += $hours
+                $appLabels += $app.Key
+            }
+            
+            Draw-SimpleBarChart $graphics $appData $appLabels $appChartBox.Width $appChartBox.Height ([System.Drawing.Color]::FromArgb(16, 185, 129))
+        } else {
+            $graphics.Clear([System.Drawing.Color]::White)
+            $graphics.DrawString("No app data yet", 
+                (New-Object System.Drawing.Font("Segoe UI", 12)), 
+                (New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Gray)), 
+                150, 100)
         }
         
-        Draw-SimpleLineChart $graphics $hourlyData $hourlyLabels $dailyChartBox.Width $dailyChartBox.Height ([System.Drawing.Color]::FromArgb(16, 185, 129))
-        
-        $dailyChartBox.Image = $bitmap
+        $appChartBox.Image = $bitmap
     }
+}
+
+function Get-DetailedActivityReport {
+    $today = (Get-Date).ToString("yyyy-MM-dd")
+    $report = @"
+DIGITAL WELLBEING DETAILED REPORT
+Generated: $(Get-Date)
+=======================================
+
+SUMMARY:
+• Total Screen Time: $([math]::Floor($global:totalActiveTime / 3600))h $([math]::Floor(($global:totalActiveTime % 3600) / 60))m
+• Active Applications: $(($global:appUsage.Keys | Where-Object { $_ -ne "Idle" -and $_ -ne "Unknown" }).Count)
+• Current Status: $(if ($global:currentApp -eq "Idle") { "Idle/Away" } else { "Using $global:currentApp" })
+
+APPLICATION USAGE:
+"@
+    
+    $topApps = $global:appUsage.GetEnumerator() | 
+               Where-Object { $_.Key -ne "Idle" -and $_.Key -ne "Unknown" } |
+               Sort-Object Value -Descending
+    
+    foreach ($app in $topApps) {
+        $hours = [math]::Floor($app.Value / 3600)
+        $minutes = [math]::Floor(($app.Value % 3600) / 60)
+        $percentage = if ($global:totalActiveTime -gt 0) { [math]::Round(($app.Value / $global:totalActiveTime) * 100) } else { 0 }
+        $report += "`n• $($app.Key): ${hours}h ${minutes}m ($percentage%)"
+    }
+    
+    $report += @"
+
+ACTIVITY LOG (Last 10 entries):
+"@
+    
+    $recentActivities = $global:appData.ActivityLog | Select-Object -Last 10
+    foreach ($activity in $recentActivities) {
+        $report += "`n• $($activity.Timestamp) - $($activity.Application) ($($activity.Type))"
+    }
+    
+    $report += @"
+
+RECOMMENDATIONS:
+"@
+    
+    if ($global:totalActiveTime -gt 8 * 3600) {
+        $report += "`n• ⚠️  High screen time detected (>8h). Consider taking more breaks."
+    }
+    
+    $idleApps = $global:appUsage.GetEnumerator() | Where-Object { $_.Key -eq "Idle" }
+    if ($idleApps.Value -gt 0) {
+        $idlePercentage = [math]::Round(($idleApps.Value / $global:totalActiveTime) * 100)
+        if ($idlePercentage -gt 30) {
+            $report += "`n• ⏰ You were idle for ${idlePercentage}% of the time. Try to be more productive!"
+        }
+    }
+    
+    return $report
+}
+
+# ========== PREMIUM FEATURES FUNCTIONS ==========
+function Start-FocusSession {
+    Update-Status "Focus Mode Activated for 25 minutes" ([System.Drawing.Color]::Orange)
+    $timerLabel.Text = "25:00"
+    $focusTimer = New-Object System.Windows.Forms.Timer
+    $focusTimer.Interval = 1000
+    $focusCountdown = 25 * 60
+    $focusTimer.Add_Tick({
+        $focusCountdown--
+        $minutes = [math]::Floor($focusCountdown / 60)
+        $seconds = $focusCountdown % 60
+        $timerLabel.Text = ("{0}:{1:00}" -f $minutes, $seconds)
+        
+        if ($focusCountdown -le 0) {
+            $focusTimer.Stop()
+            $timerLabel.Text = "Focus Complete!"
+            Update-Status "Focus session completed!" ([System.Drawing.Color]::LightGreen)
+            [System.Windows.Forms.MessageBox]::Show("Focus session completed! Time for a break.", "Wellbeing Alert", "OK", "Information")
+        }
+    })
+    $focusTimer.Start()
+    $global:focusTimer = $focusTimer
+}
+
+function Generate-Report {
+    $report = Get-DetailedActivityReport
+    $reportPath = "$env:USERPROFILE\Desktop\Wellbeing_Report_$(Get-Date -Format 'yyyyMMdd_HHmm').txt"
+    $report | Out-File -FilePath $reportPath -Encoding UTF8
+    Update-Status "Report saved to Desktop" ([System.Drawing.Color]::LightBlue)
+    [System.Windows.Forms.MessageBox]::Show("Detailed report saved to:`n$reportPath", "Report Generated", "OK", "Information")
 }
 
 # ========== MAIN FORM ==========
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Digital Wellbeing & Parental Controls"
+$form.Text = "Digital Wellbeing & Parental Controls - REAL TRACKING"
 $form.Size = New-Object System.Drawing.Size(1200, 800)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = [System.Drawing.Color]::FromArgb(240, 242, 245)
@@ -289,22 +478,21 @@ $logoPanel.Dock = [System.Windows.Forms.DockStyle]::Top
 $sidebar.Controls.Add($logoPanel)
 
 $logoLabel = New-Object System.Windows.Forms.Label
-$logoLabel.Text = "DIGITAL`nWELLBEING"
+$logoLabel.Text = "DIGITAL`nWELLBEING`nTRACKER"
 $logoLabel.ForeColor = [System.Drawing.Color]::White
-$logoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
+$logoLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
 $logoLabel.Size = New-Object System.Drawing.Size(200, 80)
 $logoLabel.Location = New-Object System.Drawing.Point(10, 10)
 $logoLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
 $logoPanel.Controls.Add($logoLabel)
 
 # Sidebar Buttons
-$buttonTitles = @("Dashboard", "Activity", "Screen Time", "Notifications", "App Usage", "Parental Controls", "Reports", "Settings")
+$buttonTitles = @("Dashboard", "Real-time Activity", "Screen Time", "App Usage", "Reports", "Settings")
 
 for ($i = 0; $i -lt $buttonTitles.Length; $i++) {
     $button = New-Object System.Windows.Forms.Button
-    $button.Text = $buttonTitles[$i]
+    $button.Text = "  " + $buttonTitles[$i]
     $button.Size = New-Object System.Drawing.Size(200, 45)
-    # FIXED: Correct way to create Point
     $button.Location = New-Object System.Drawing.Point(10, (120 + ($i * 55)))
     $button.BackColor = [System.Drawing.Color]::FromArgb(40, 40, 70)
     $button.ForeColor = [System.Drawing.Color]::White
@@ -322,18 +510,27 @@ for ($i = 0; $i -lt $buttonTitles.Length; $i++) {
 
 # Status Panel
 $statusPanel = New-Object System.Windows.Forms.Panel
-$statusPanel.Size = New-Object System.Drawing.Size(220, 60)
+$statusPanel.Size = New-Object System.Drawing.Size(220, 100)
 $statusPanel.BackColor = [System.Drawing.Color]::FromArgb(35, 35, 60)
 $statusPanel.Dock = [System.Windows.Forms.DockStyle]::Bottom
 $sidebar.Controls.Add($statusPanel)
 
 $statusLabel = New-Object System.Windows.Forms.Label
-$statusLabel.Text = "Initializing..."
+$statusLabel.Text = "Initializing tracking..."
 $statusLabel.ForeColor = [System.Drawing.Color]::LightGreen
 $statusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $statusLabel.Size = New-Object System.Drawing.Size(200, 20)
 $statusLabel.Location = New-Object System.Drawing.Point(10, 20)
 $statusPanel.Controls.Add($statusLabel)
+
+$timerLabel = New-Object System.Windows.Forms.Label
+$timerLabel.Text = "Ready"
+$timerLabel.ForeColor = [System.Drawing.Color]::White
+$timerLabel.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
+$timerLabel.Size = New-Object System.Drawing.Size(200, 30)
+$timerLabel.Location = New-Object System.Drawing.Point(10, 50)
+$timerLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+$statusPanel.Controls.Add($timerLabel)
 
 # ========== MAIN CONTENT AREA ==========
 $contentPanel = New-Object System.Windows.Forms.Panel
@@ -342,14 +539,14 @@ $contentPanel.BackColor = [System.Drawing.Color]::White
 $contentPanel.Dock = [System.Windows.Forms.DockStyle]::Right
 $form.Controls.Add($contentPanel)
 
-# Header
+# Header with Action Buttons
 $headerPanel = New-Object System.Windows.Forms.Panel
 $headerPanel.Size = New-Object System.Drawing.Size(940, 100)
 $headerPanel.Location = New-Object System.Drawing.Point(20, 20)
 $headerPanel.BackColor = [System.Drawing.Color]::White
 
 $welcomeLabel = New-Object System.Windows.Forms.Label
-$welcomeLabel.Text = "Digital Wellbeing Dashboard"
+$welcomeLabel.Text = "Real-time Screen Time Tracker"
 $welcomeLabel.Font = New-Object System.Drawing.Font("Segoe UI", 24, [System.Drawing.FontStyle]::Bold)
 $welcomeLabel.ForeColor = [System.Drawing.Color]::FromArgb(25, 25, 46)
 $welcomeLabel.Size = New-Object System.Drawing.Size(500, 50)
@@ -364,9 +561,8 @@ $dateLabel.Size = New-Object System.Drawing.Size(300, 30)
 $dateLabel.Location = New-Object System.Drawing.Point(30, 70)
 $headerPanel.Controls.Add($dateLabel)
 
-# FIXED TIME DISPLAY
 $timeLabel = New-Object System.Windows.Forms.Label
-$timeLabel.Text = (Get-Date).ToString("HH:mm")
+$timeLabel.Text = (Get-Date).ToString("HH:mm:ss")
 $timeLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11)
 $timeLabel.ForeColor = [System.Drawing.Color]::FromArgb(79, 70, 229)
 $timeLabel.Size = New-Object System.Drawing.Size(100, 30)
@@ -374,13 +570,36 @@ $timeLabel.Location = New-Object System.Drawing.Point(800, 30)
 $timeLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
 $headerPanel.Controls.Add($timeLabel)
 
+# Action Buttons
+$focusButton = New-Object System.Windows.Forms.Button
+$focusButton.Text = "🎯 Start Focus"
+$focusButton.Size = New-Object System.Drawing.Size(120, 35)
+$focusButton.Location = New-Object System.Drawing.Point(600, 30)
+$focusButton.BackColor = [System.Drawing.Color]::FromArgb(79, 70, 229)
+$focusButton.ForeColor = [System.Drawing.Color]::White
+$focusButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$focusButton.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$focusButton.Add_Click({ Start-FocusSession })
+$headerPanel.Controls.Add($focusButton)
+
+$reportButton = New-Object System.Windows.Forms.Button
+$reportButton.Text = "📊 Generate Report"
+$reportButton.Size = New-Object System.Drawing.Size(140, 35)
+$reportButton.Location = New-Object System.Drawing.Point(730, 30)
+$reportButton.BackColor = [System.Drawing.Color]::FromArgb(16, 185, 129)
+$reportButton.ForeColor = [System.Drawing.Color]::White
+$reportButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$reportButton.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$reportButton.Add_Click({ Generate-Report })
+$headerPanel.Controls.Add($reportButton)
+
 $contentPanel.Controls.Add($headerPanel)
 
 # ========== PANEL MANAGEMENT ==========
 $panels = @{}
 $global:statsPanel = $null
 $global:weeklyChartBox = $null
-$global:dailyChartBox = $null
+$global:appChartBox = $null
 
 function Create-DashboardPanel {
     $panel = New-Object System.Windows.Forms.Panel
@@ -395,10 +614,10 @@ function Create-DashboardPanel {
     $statsPanel.Location = New-Object System.Drawing.Point(0, 0)
     
     $cards = @(
-        @{Title="SCREEN TIME"; Value="0h 0m"; Color="#4F46E5"},
-        @{Title="APPS USED"; Value="0"; Color="#10B981"},
-        @{Title="NOTIFICATIONS"; Value="0"; Color="#F59E0B"},
-        @{Title="FOCUS TIME"; Value="0h 0m"; Color="#EF4444"}
+        @{Title="SCREEN TIME TODAY"; Value="0h 0m"; Color="#4F46E5"; Desc="Active time"},
+        @{Title="APPS USED"; Value="0"; Color="#10B981"; Desc="Unique applications"},
+        @{Title="PRODUCTIVITY"; Value="0%"; Color="#F59E0B"; Desc="Productive time"},
+        @{Title="CURRENT ACTIVITY"; Value="Idle"; Color="#EF4444"; Desc="Now using"}
     )
     
     for ($i = 0; $i -lt $cards.Length; $i++) {
@@ -406,11 +625,10 @@ function Create-DashboardPanel {
         $card.Size = New-Object System.Drawing.Size(220, 140)
         $card.Location = New-Object System.Drawing.Point(($i * 240), 0)
         $card.BackColor = [System.Drawing.Color]::White
-        $card.BorderStyle = [System.Windows.Forms.BorderStyle]::None
         
         $valueLabel = New-Object System.Windows.Forms.Label
         $valueLabel.Text = $cards[$i].Value
-        $valueLabel.Font = New-Object System.Drawing.Font("Segoe UI", 28, [System.Drawing.FontStyle]::Bold)
+        $valueLabel.Font = New-Object System.Drawing.Font("Segoe UI", 24, [System.Drawing.FontStyle]::Bold)
         $valueLabel.ForeColor = [System.Drawing.Color]::FromArgb(25, 25, 46)
         $valueLabel.Size = New-Object System.Drawing.Size(200, 60)
         $valueLabel.Location = New-Object System.Drawing.Point(20, 30)
@@ -418,7 +636,7 @@ function Create-DashboardPanel {
         
         $titleLabel = New-Object System.Windows.Forms.Label
         $titleLabel.Text = $cards[$i].Title
-        $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+        $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
         $titleLabel.ForeColor = [System.Drawing.Color]::Gray
         $titleLabel.Size = New-Object System.Drawing.Size(200, 25)
         $titleLabel.Location = New-Object System.Drawing.Point(20, 100)
@@ -429,12 +647,12 @@ function Create-DashboardPanel {
     $global:statsPanel = $statsPanel
     $panel.Controls.Add($statsPanel)
     
-    # Charts Area - WITH SIMPLE GRAPHS
+    # Charts Area
     $chartsPanel = New-Object System.Windows.Forms.Panel
     $chartsPanel.Size = New-Object System.Drawing.Size(940, 300)
     $chartsPanel.Location = New-Object System.Drawing.Point(0, 170)
     
-    # Weekly Chart Panel
+    # Weekly Chart
     $weeklyChartPanel = New-Object System.Windows.Forms.Panel
     $weeklyChartPanel.Size = New-Object System.Drawing.Size(460, 280)
     $weeklyChartPanel.Location = New-Object System.Drawing.Point(0, 0)
@@ -447,49 +665,45 @@ function Create-DashboardPanel {
     $weeklyChartTitle.Location = New-Object System.Drawing.Point(20, 20)
     $weeklyChartPanel.Controls.Add($weeklyChartTitle)
     
-    # Weekly Chart PictureBox
     $weeklyChartBox = New-Object System.Windows.Forms.PictureBox
     $weeklyChartBox.Size = New-Object System.Drawing.Size(420, 200)
     $weeklyChartBox.Location = New-Object System.Drawing.Point(20, 60)
     $weeklyChartBox.BackColor = [System.Drawing.Color]::White
     $global:weeklyChartBox = $weeklyChartBox
-    
     $weeklyChartPanel.Controls.Add($weeklyChartBox)
     $chartsPanel.Controls.Add($weeklyChartPanel)
     
-    # Daily Chart Panel
-    $dailyChartPanel = New-Object System.Windows.Forms.Panel
-    $dailyChartPanel.Size = New-Object System.Drawing.Size(460, 280)
-    $dailyChartPanel.Location = New-Object System.Drawing.Point(480, 0)
-    $dailyChartPanel.BackColor = [System.Drawing.Color]::White
+    # App Usage Chart
+    $appChartPanel = New-Object System.Windows.Forms.Panel
+    $appChartPanel.Size = New-Object System.Drawing.Size(460, 280)
+    $appChartPanel.Location = New-Object System.Drawing.Point(480, 0)
+    $appChartPanel.BackColor = [System.Drawing.Color]::White
     
-    $dailyChartTitle = New-Object System.Windows.Forms.Label
-    $dailyChartTitle.Text = "Daily Usage Pattern"
-    $dailyChartTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
-    $dailyChartTitle.Size = New-Object System.Drawing.Size(300, 30)
-    $dailyChartTitle.Location = New-Object System.Drawing.Point(20, 20)
-    $dailyChartPanel.Controls.Add($dailyChartTitle)
+    $appChartTitle = New-Object System.Windows.Forms.Label
+    $appChartTitle.Text = "Top Applications"
+    $appChartTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+    $appChartTitle.Size = New-Object System.Drawing.Size(300, 30)
+    $appChartTitle.Location = New-Object System.Drawing.Point(20, 20)
+    $appChartPanel.Controls.Add($appChartTitle)
     
-    # Daily Chart PictureBox
-    $dailyChartBox = New-Object System.Windows.Forms.PictureBox
-    $dailyChartBox.Size = New-Object System.Drawing.Size(420, 200)
-    $dailyChartBox.Location = New-Object System.Drawing.Point(20, 60)
-    $dailyChartBox.BackColor = [System.Drawing.Color]::White
-    $global:dailyChartBox = $dailyChartBox
-    
-    $dailyChartPanel.Controls.Add($dailyChartBox)
-    $chartsPanel.Controls.Add($dailyChartPanel)
+    $appChartBox = New-Object System.Windows.Forms.PictureBox
+    $appChartBox.Size = New-Object System.Drawing.Size(420, 200)
+    $appChartBox.Location = New-Object System.Drawing.Point(20, 60)
+    $appChartBox.BackColor = [System.Drawing.Color]::White
+    $global:appChartBox = $appChartBox
+    $appChartPanel.Controls.Add($appChartBox)
+    $chartsPanel.Controls.Add($appChartPanel)
     
     $panel.Controls.Add($chartsPanel)
     
-    # Recent Activity
+    # Real-time Activity Feed
     $activityPanel = New-Object System.Windows.Forms.Panel
     $activityPanel.Size = New-Object System.Drawing.Size(940, 180)
     $activityPanel.Location = New-Object System.Drawing.Point(0, 480)
     $activityPanel.BackColor = [System.Drawing.Color]::White
     
     $activityTitle = New-Object System.Windows.Forms.Label
-    $activityTitle.Text = "Recent Activity"
+    $activityTitle.Text = "🔄 Real-time Activity"
     $activityTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
     $activityTitle.Size = New-Object System.Drawing.Size(300, 30)
     $activityTitle.Location = New-Object System.Drawing.Point(20, 20)
@@ -498,69 +712,102 @@ function Create-DashboardPanel {
     $activityList = New-Object System.Windows.Forms.ListBox
     $activityList.Size = New-Object System.Drawing.Size(900, 130)
     $activityList.Location = New-Object System.Drawing.Point(20, 60)
-    $activityList.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $activityList.Font = New-Object System.Drawing.Font("Segoe UI", 9)
     $activityList.BorderStyle = [System.Windows.Forms.BorderStyle]::None
     $activityList.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 255)
-    
-    $activities = @(
-        "09:00 AM  •  Chrome  •  45 minutes",
-        "10:00 AM  •  12 notifications received",
-        "11:30 AM  •  Microsoft Word  •  1.5 hours",
-        "01:00 PM  •  Lunch break",
-        "02:30 PM  •  Zoom Meeting  •  1 hour",
-        "04:00 PM  •  Social Media  •  30 minutes",
-        "06:00 PM  •  Gaming  •  1 hour"
-    )
-    
-    foreach ($activity in $activities) {
-        $activityList.Items.Add($activity)
-    }
-    
     $activityPanel.Controls.Add($activityList)
+    
     $panel.Controls.Add($activityPanel)
     
     return $panel
 }
 
-function Create-ActivityPanel {
+function Create-RealtimeActivityPanel {
     $panel = New-Object System.Windows.Forms.Panel
     $panel.Size = New-Object System.Drawing.Size(940, 660)
     $panel.Location = New-Object System.Drawing.Point(20, 140)
     $panel.BackColor = [System.Drawing.Color]::Transparent
-    $panel.Name = "ActivityPanel"
+    $panel.Name = "Real-time ActivityPanel"
     
     $titleLabel = New-Object System.Windows.Forms.Label
-    $titleLabel.Text = "Activity Details"
+    $titleLabel.Text = "📊 Real-time Activity Monitor"
     $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
-    $titleLabel.Size = New-Object System.Drawing.Size(300, 40)
+    $titleLabel.Size = New-Object System.Drawing.Size(400, 40)
     $titleLabel.Location = New-Object System.Drawing.Point(30, 30)
     $panel.Controls.Add($titleLabel)
     
-    # Simple activity list
-    $activityList = New-Object System.Windows.Forms.ListBox
-    $activityList.Size = New-Object System.Drawing.Size(900, 580)
-    $activityList.Location = New-Object System.Drawing.Point(30, 90)
-    $activityList.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    $activityPanel = New-Object System.Windows.Forms.Panel
+    $activityPanel.Size = New-Object System.Drawing.Size(900, 580)
+    $activityPanel.Location = New-Object System.Drawing.Point(30, 90)
+    $activityPanel.BackColor = [System.Drawing.Color]::White
     
-    $activities = @(
-        "09:00 AM - Started: Google Chrome",
-        "09:45 AM - Switched to: Microsoft Word", 
-        "11:30 AM - Break: Lunch",
-        "01:00 PM - Meeting: Zoom Call",
-        "02:00 PM - Working: Visual Studio Code",
-        "04:00 PM - Break: Social Media",
-        "06:00 PM - Entertainment: Gaming"
-    )
+    # Current Activity
+    $currentLabel = New-Object System.Windows.Forms.Label
+    $currentLabel.Text = "Current Application:"
+    $currentLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+    $currentLabel.Size = New-Object System.Drawing.Size(250, 30)
+    $currentLabel.Location = New-Object System.Drawing.Point(30, 30)
+    $activityPanel.Controls.Add($currentLabel)
     
-    foreach ($activity in $activities) {
-        $activityList.Items.Add($activity)
-    }
+    $currentAppLabel = New-Object System.Windows.Forms.Label
+    $currentAppLabel.Text = "Detecting..."
+    $currentAppLabel.Font = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Bold)
+    $currentAppLabel.ForeColor = [System.Drawing.Color]::FromArgb(79, 70, 229)
+    $currentAppLabel.Size = New-Object System.Drawing.Size(400, 40)
+    $currentAppLabel.Location = New-Object System.Drawing.Point(300, 30)
+    $activityPanel.Controls.Add($currentAppLabel)
     
-    $panel.Controls.Add($activityList)
+    # Activity Status
+    $statusLabel = New-Object System.Windows.Forms.Label
+    $statusLabel.Text = "Activity Status:"
+    $statusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+    $statusLabel.Size = New-Object System.Drawing.Size(250, 30)
+    $statusLabel.Location = New-Object System.Drawing.Point(30, 80)
+    $activityPanel.Controls.Add($statusLabel)
+    
+    $activityStatusLabel = New-Object System.Windows.Forms.Label
+    $activityStatusLabel.Text = "Checking..."
+    $activityStatusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14)
+    $activityStatusLabel.ForeColor = [System.Drawing.Color]::FromArgb(16, 185, 129)
+    $activityStatusLabel.Size = New-Object System.Drawing.Size(400, 40)
+    $activityStatusLabel.Location = New-Object System.Drawing.Point(300, 80)
+    $activityPanel.Controls.Add($activityStatusLabel)
+    
+    # Session Time
+    $sessionLabel = New-Object System.Windows.Forms.Label
+    $sessionLabel.Text = "Current Session:"
+    $sessionLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+    $sessionLabel.Size = New-Object System.Drawing.Size(250, 30)
+    $sessionLabel.Location = New-Object System.Drawing.Point(30, 130)
+    $activityPanel.Controls.Add($sessionLabel)
+    
+    $sessionTimeLabel = New-Object System.Windows.Forms.Label
+    $sessionTimeLabel.Text = "0h 0m"
+    $sessionTimeLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14)
+    $sessionTimeLabel.ForeColor = [System.Drawing.Color]::FromArgb(245, 158, 11)
+    $sessionTimeLabel.Size = New-Object System.Drawing.Size(400, 40)
+    $sessionTimeLabel.Location = New-Object System.Drawing.Point(300, 130)
+    $activityPanel.Controls.Add($sessionTimeLabel)
+    
+    # Recent Activity Log
+    $logLabel = New-Object System.Windows.Forms.Label
+    $logLabel.Text = "Recent Activity Log:"
+    $logLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+    $logLabel.Size = New-Object System.Drawing.Size(250, 30)
+    $logLabel.Location = New-Object System.Drawing.Point(30, 180)
+    $activityPanel.Controls.Add($logLabel)
+    
+    $activityLogList = New-Object System.Windows.Forms.ListBox
+    $activityLogList.Size = New-Object System.Drawing.Size(800, 300)
+    $activityLogList.Location = New-Object System.Drawing.Point(30, 220)
+    $activityLogList.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    
+    $panel.Controls.Add($activityPanel)
     
     return $panel
 }
 
+# Create other panels (simplified versions)
 function Create-ScreenTimePanel {
     $panel = New-Object System.Windows.Forms.Panel
     $panel.Size = New-Object System.Drawing.Size(940, 660)
@@ -569,25 +816,23 @@ function Create-ScreenTimePanel {
     $panel.Name = "ScreenTimePanel"
     
     $titleLabel = New-Object System.Windows.Forms.Label
-    $titleLabel.Text = "Screen Time Analysis"
+    $titleLabel.Text = "📱 Detailed Screen Time"
     $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
     $titleLabel.Size = New-Object System.Drawing.Size(400, 40)
     $titleLabel.Location = New-Object System.Drawing.Point(30, 30)
     $panel.Controls.Add($titleLabel)
     
-    # Simple statistics
     $statsPanel = New-Object System.Windows.Forms.Panel
     $statsPanel.Size = New-Object System.Drawing.Size(900, 580)
     $statsPanel.Location = New-Object System.Drawing.Point(30, 90)
     $statsPanel.BackColor = [System.Drawing.Color]::White
     
     $stats = @(
-        "Today's Total: 5 hours 20 minutes",
-        "Average Daily: 6 hours 15 minutes",
-        "Most Used App: Chrome (2h 15m)",
-        "Peak Usage Time: 10:00 AM - 12:00 PM",
-        "Productive Time: 3 hours 45 minutes",
-        "Entertainment Time: 1 hour 35 minutes"
+        "Today's Total: Calculating...",
+        "Weekly Average: Calculating...",
+        "Most Used App: Detecting...",
+        "Productive Time: Calculating...",
+        "Idle Time: Calculating..."
     )
     
     for ($i = 0; $i -lt $stats.Count; $i++) {
@@ -612,113 +857,24 @@ function Create-AppUsagePanel {
     $panel.Name = "AppUsagePanel"
     
     $titleLabel = New-Object System.Windows.Forms.Label
-    $titleLabel.Text = "Application Usage"
+    $titleLabel.Text = "📊 Application Usage Details"
     $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
-    $titleLabel.Size = New-Object System.Drawing.Size(300, 40)
+    $titleLabel.Size = New-Object System.Drawing.Size(400, 40)
     $titleLabel.Location = New-Object System.Drawing.Point(30, 30)
     $panel.Controls.Add($titleLabel)
     
-    # App usage list
     $usagePanel = New-Object System.Windows.Forms.Panel
     $usagePanel.Size = New-Object System.Drawing.Size(900, 580)
     $usagePanel.Location = New-Object System.Drawing.Point(30, 90)
     $usagePanel.BackColor = [System.Drawing.Color]::White
     
-    $apps = @(
-        "Google Chrome - 2h 15m (35%)",
-        "Microsoft Word - 1h 30m (23%)",
-        "Discord - 1h 15m (19%)",
-        "Spotify - 45m (12%)",
-        "Visual Studio Code - 30m (8%)",
-        "Windows Explorer - 25m (6%)",
-        "Steam - 20m (4%)",
-        "Zoom - 15m (3%)"
-    )
-    
-    for ($i = 0; $i -lt $apps.Count; $i++) {
-        $appLabel = New-Object System.Windows.Forms.Label
-        $appLabel.Text = $apps[$i]
-        $appLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14)
-        $appLabel.Size = New-Object System.Drawing.Size(800, 40)
-        $appLabel.Location = New-Object System.Drawing.Point(30, (30 + ($i * 50)))
-        $usagePanel.Controls.Add($appLabel)
-    }
+    $appList = New-Object System.Windows.Forms.ListBox
+    $appList.Size = New-Object System.Drawing.Size(800, 500)
+    $appList.Location = New-Object System.Drawing.Point(30, 30)
+    $appList.Font = New-Object System.Drawing.Font("Segoe UI", 11)
+    $usagePanel.Controls.Add($appList)
     
     $panel.Controls.Add($usagePanel)
-    
-    return $panel
-}
-
-function Create-ParentalControlsPanel {
-    $panel = New-Object System.Windows.Forms.Panel
-    $panel.Size = New-Object System.Drawing.Size(940, 660)
-    $panel.Location = New-Object System.Drawing.Point(20, 140)
-    $panel.BackColor = [System.Drawing.Color]::Transparent
-    $panel.Name = "ParentalControlsPanel"
-    
-    $titleLabel = New-Object System.Windows.Forms.Label
-    $titleLabel.Text = "Parental Controls"
-    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
-    $titleLabel.Size = New-Object System.Drawing.Size(300, 40)
-    $titleLabel.Location = New-Object System.Drawing.Point(30, 30)
-    $panel.Controls.Add($titleLabel)
-    
-    # Controls
-    $controlsPanel = New-Object System.Windows.Forms.Panel
-    $controlsPanel.Size = New-Object System.Drawing.Size(900, 580)
-    $controlsPanel.Location = New-Object System.Drawing.Point(30, 90)
-    $controlsPanel.BackColor = [System.Drawing.Color]::White
-    
-    # Time Limit
-    $timeLimitLabel = New-Object System.Windows.Forms.Label
-    $timeLimitLabel.Text = "Daily Time Limit:"
-    $timeLimitLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
-    $timeLimitLabel.Size = New-Object System.Drawing.Size(200, 30)
-    $timeLimitLabel.Location = New-Object System.Drawing.Point(30, 30)
-    $controlsPanel.Controls.Add($timeLimitLabel)
-    
-    $timeLimitValue = New-Object System.Windows.Forms.Label
-    $timeLimitValue.Text = "6 hours"
-    $timeLimitValue.Font = New-Object System.Drawing.Font("Segoe UI", 14)
-    $timeLimitValue.ForeColor = [System.Drawing.Color]::FromArgb(79, 70, 229)
-    $timeLimitValue.Size = New-Object System.Drawing.Size(200, 30)
-    $timeLimitValue.Location = New-Object System.Drawing.Point(250, 30)
-    $controlsPanel.Controls.Add($timeLimitValue)
-    
-    # Bedtime
-    $bedtimeLabel = New-Object System.Windows.Forms.Label
-    $bedtimeLabel.Text = "Bedtime:"
-    $bedtimeLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
-    $bedtimeLabel.Size = New-Object System.Drawing.Size(200, 30)
-    $bedtimeLabel.Location = New-Object System.Drawing.Point(30, 80)
-    $controlsPanel.Controls.Add($bedtimeLabel)
-    
-    $bedtimeValue = New-Object System.Windows.Forms.Label
-    $bedtimeValue.Text = "10:00 PM"
-    $bedtimeValue.Font = New-Object System.Drawing.Font("Segoe UI", 14)
-    $bedtimeValue.ForeColor = [System.Drawing.Color]::FromArgb(79, 70, 229)
-    $bedtimeValue.Size = New-Object System.Drawing.Size(200, 30)
-    $bedtimeValue.Location = New-Object System.Drawing.Point(250, 80)
-    $controlsPanel.Controls.Add($bedtimeValue)
-    
-    # Blocked Apps
-    $blockedLabel = New-Object System.Windows.Forms.Label
-    $blockedLabel.Text = "Blocked Applications:"
-    $blockedLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
-    $blockedLabel.Size = New-Object System.Drawing.Size(250, 30)
-    $blockedLabel.Location = New-Object System.Drawing.Point(30, 130)
-    $controlsPanel.Controls.Add($blockedLabel)
-    
-    $blockedList = New-Object System.Windows.Forms.ListBox
-    $blockedList.Size = New-Object System.Drawing.Size(300, 150)
-    $blockedList.Location = New-Object System.Drawing.Point(30, 170)
-    $blockedList.Items.Add("Steam")
-    $blockedList.Items.Add("TikTok")
-    $blockedList.Items.Add("Instagram")
-    $blockedList.Items.Add("Discord")
-    $controlsPanel.Controls.Add($blockedList)
-    
-    $panel.Controls.Add($controlsPanel)
     
     return $panel
 }
@@ -731,25 +887,24 @@ function Create-SettingsPanel {
     $panel.Name = "SettingsPanel"
     
     $titleLabel = New-Object System.Windows.Forms.Label
-    $titleLabel.Text = "Settings"
+    $titleLabel.Text = "⚙️ Settings"
     $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
     $titleLabel.Size = New-Object System.Drawing.Size(300, 40)
     $titleLabel.Location = New-Object System.Drawing.Point(30, 30)
     $panel.Controls.Add($titleLabel)
     
-    # Settings
     $settingsPanel = New-Object System.Windows.Forms.Panel
     $settingsPanel.Size = New-Object System.Drawing.Size(900, 580)
     $settingsPanel.Location = New-Object System.Drawing.Point(30, 90)
     $settingsPanel.BackColor = [System.Drawing.Color]::White
     
     $settings = @(
-        "Auto Start with Windows: Enabled",
-        "Show Notifications: Enabled",
-        "Dark Mode: Disabled",
-        "Data Retention: 30 days",
         "Real-time Tracking: Enabled",
-        "Alert Sounds: Enabled"
+        "Track Applications: Enabled",
+        "Track Productivity: Enabled",
+        "Auto-save Data: Every 5 minutes",
+        "Generate Daily Reports: Enabled",
+        "Show Notifications: Enabled"
     )
     
     for ($i = 0; $i -lt $settings.Count; $i++) {
@@ -766,40 +921,11 @@ function Create-SettingsPanel {
     return $panel
 }
 
-# Create simple panels for other sections
-function Create-SimplePanel {
-    param([string]$title)
-    
-    $panel = New-Object System.Windows.Forms.Panel
-    $panel.Size = New-Object System.Drawing.Size(940, 660)
-    $panel.Location = New-Object System.Drawing.Point(20, 140)
-    $panel.BackColor = [System.Drawing.Color]::Transparent
-    $panel.Name = "${title}Panel"
-    
-    $titleLabel = New-Object System.Windows.Forms.Label
-    $titleLabel.Text = $title
-    $titleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
-    $titleLabel.Size = New-Object System.Drawing.Size(400, 40)
-    $titleLabel.Location = New-Object System.Drawing.Point(30, 30)
-    $panel.Controls.Add($titleLabel)
-    
-    $contentLabel = New-Object System.Windows.Forms.Label
-    $contentLabel.Text = "This section contains detailed $title information and analytics."
-    $contentLabel.Font = New-Object System.Drawing.Font("Segoe UI", 14)
-    $contentLabel.Size = New-Object System.Drawing.Size(800, 100)
-    $contentLabel.Location = New-Object System.Drawing.Point(30, 100)
-    $panel.Controls.Add($contentLabel)
-    
-    return $panel
-}
-
 # Create all panels
 $panels["Dashboard"] = Create-DashboardPanel
-$panels["Activity"] = Create-ActivityPanel
+$panels["Real-time Activity"] = Create-RealtimeActivityPanel
 $panels["Screen Time"] = Create-ScreenTimePanel
-$panels["Notifications"] = Create-SimplePanel "Notifications"
 $panels["App Usage"] = Create-AppUsagePanel
-$panels["Parental Controls"] = Create-ParentalControlsPanel
 $panels["Reports"] = Create-SimplePanel "Reports"
 $panels["Settings"] = Create-SettingsPanel
 
@@ -820,54 +946,80 @@ function Show-Panel {
     if ($panels.ContainsKey($panelName)) {
         $panels[$panelName].Visible = $true
         $welcomeLabel.Text = $panelName
-        
-        # Update charts when dashboard is shown
-        if ($panelName -eq "Dashboard") {
-            Update-Charts
-        }
     }
 }
 
 # Show dashboard by default
 Show-Panel "Dashboard"
 
-# FIXED: Clock timer
-$clockTimer = New-Object System.Windows.Forms.Timer
-$clockTimer.Interval = 60000
-$clockTimer.Add_Tick({
-    $timeLabel.Text = (Get-Date).ToString("HH:mm")
-})
-$clockTimer.Start()
+# ========== REAL-TIME TRACKING TIMERS ==========
 
-# Application monitoring
-$monitorTimer = New-Object System.Windows.Forms.Timer
-$monitorTimer.Interval = 10000
-$monitorTimer.Add_Tick({
-    $today = (Get-Date).ToString("yyyy-MM-dd")
-    if (-not $global:appData.DailyStats.$today) {
-        $global:appData.DailyStats.$today = @{TotalMinutes = 0}
-    }
-    $global:appData.DailyStats.$today.TotalMinutes++
+# Clock timer
+$clockTimer = New-Object System.Windows.Forms.Timer
+$clockTimer.Interval = 1000
+$clockTimer.Add_Tick({
+    $timeLabel.Text = (Get-Date).ToString("HH:mm:ss")
+    
+    # Update screen time tracking
+    Update-ScreenTimeTracking
     
     # Update dashboard stats
     Update-DashboardStats
     
-    # Update status
-    $screenTime = if ($global:appData.DailyStats.$today) { 
-        "$([math]::Round($global:appData.DailyStats.$today.TotalMinutes/60, 1))h" 
-    } else { "0h" }
+    # Update status with real data
+    $screenTimeHours = [math]::Floor($global:totalActiveTime / 3600)
+    $screenTimeMinutes = [math]::Floor(($global:totalActiveTime % 3600) / 60)
     
-    Update-Status "Active • Screen Time: $screenTime" ([System.Drawing.Color]::LightGreen)
+    $activityLevel = Get-UserActivityLevel
+    $statusText = "$activityLevel • $screenTimeHours" + "h $screenTimeMinutes" + "m • $global:currentApp"
     
-    # Auto-save every 5 minutes
-    if (($global:appData.DailyStats.$today.TotalMinutes % 5) -eq 0) {
-        $global:appData | ConvertTo-Json | Set-Content $dataFile -Force
+    if ($activityLevel -eq "Active") {
+        Update-Status $statusText ([System.Drawing.Color]::LightGreen)
+    } elseif ($activityLevel -eq "Away") {
+        Update-Status $statusText ([System.Drawing.Color]::Yellow)
+    } else {
+        Update-Status $statusText ([System.Drawing.Color]::LightGray)
     }
 })
-$monitorTimer.Start()
+$clockTimer.Start()
+
+# Auto-save timer (every 5 minutes)
+$saveTimer = New-Object System.Windows.Forms.Timer
+$saveTimer.Interval = 300000
+$saveTimer.Add_Tick({
+    $today = (Get-Date).ToString("yyyy-MM-dd")
+    
+    # Save app usage data
+    $global:appData.AppUsage = @{}
+    foreach ($app in $global:appUsage.Keys) {
+        $global:appData.AppUsage[$app] = $global:appUsage[$app]
+    }
+    
+    # Save detailed daily data
+    if (-not $global:appData.DailyDetailed.$today) {
+        $global:appData.DailyDetailed.$today = @{}
+    }
+    
+    $global:appData.DailyDetailed.$today.LastUpdate = (Get-Date).ToString("HH:mm:ss")
+    $global:appData.DailyDetailed.$today.TotalSeconds = $global:totalActiveTime
+    $global:appData.DailyDetailed.$today.AppUsage = $global:appUsage
+    
+    # Save to file
+    $global:appData | ConvertTo-Json | Set-Content $dataFile -Force
+    Update-Status "Data auto-saved" ([System.Drawing.Color]::LightBlue)
+})
+$saveTimer.Start()
+
+# Chart update timer (every 30 seconds)
+$chartTimer = New-Object System.Windows.Forms.Timer
+$chartTimer.Interval = 30000
+$chartTimer.Add_Tick({
+    Update-Charts
+})
+$chartTimer.Start()
 
 # Set initial status
-Update-Status "Active • Monitoring" ([System.Drawing.Color]::LightGreen)
+Update-Status "Starting real-time tracking..." ([System.Drawing.Color]::LightGreen)
 
 # Initial chart drawing
 Update-Charts
@@ -875,13 +1027,22 @@ Update-Charts
 # Form closing event
 $form.Add_FormClosing({
     $clockTimer.Stop()
-    $monitorTimer.Stop()
+    $saveTimer.Stop()
+    $chartTimer.Stop()
+    
+    # Final save
+    $today = (Get-Date).ToString("yyyy-MM-dd")
+    $global:appData.DailyStats.$today.TotalSeconds = $global:totalActiveTime
+    $global:appData.DailyStats.$today.EndTime = (Get-Date).ToString("HH:mm:ss")
     $global:appData | ConvertTo-Json | Set-Content $dataFile -Force
+    
+    Update-Status "Shutting down..." ([System.Drawing.Color]::Yellow)
 })
 
 # Show the form
 $form.Add_Shown({
     $form.Activate()
     Update-Charts
+    Update-Status "Real-time tracking active" ([System.Drawing.Color]::LightGreen)
 })
 [void]$form.ShowDialog()
